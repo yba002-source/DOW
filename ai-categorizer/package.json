@@ -1,5 +1,9 @@
 {
   "name": "dow-ai-categorizer",
   "version": "1.0.0",
-  "private": true
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node index.ts"
+  }
 }
