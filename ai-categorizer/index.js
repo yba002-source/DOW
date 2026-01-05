@@ -4,10 +4,6 @@ import { pipeline } from "@xenova/transformers";
 /**
  * DOW AI Categorizer — Embeddings + Similarity (Fixed)
  *
- * What was wrong before:
- * - We incorrectly used embedding.data[0] as if it were a vector.
- * - In practice, embedding.data is already the full Float32Array vector.
- *
  * Improvements:
  * - Correct vector handling
  * - Cache category embeddings (fast + scalable)
@@ -105,8 +101,9 @@ const CATEGORY_DESCRIPTIONS = {
 
 // Similarity tuning
 const TOP_K = 5;
-// Lower = more categories, Higher = stricter. Start modest.
-const MIN_SCORE = 0.22;
+
+// ✅ CHANGED: stricter threshold to reduce irrelevant tags
+const MIN_SCORE = 0.30;
 
 // ----------------------
 // Lazy load model + cache category vectors
@@ -124,7 +121,6 @@ async function getEmbedder() {
 async function embedText(text) {
   const model = await getEmbedder();
   const out = await model(text, { pooling: "mean", normalize: true });
-  // out.data is the full embedding vector (Float32Array)
   return out.data;
 }
 
@@ -132,7 +128,6 @@ async function ensureCategoryVectors() {
   if (categoryVectors) return categoryVectors;
 
   const map = new Map();
-  // Compute once, reuse forever
   for (const cat of CATEGORIES) {
     const desc = CATEGORY_DESCRIPTIONS[cat] || cat;
     const vec = await embedText(desc);
@@ -142,26 +137,19 @@ async function ensureCategoryVectors() {
   return categoryVectors;
 }
 
-// Cosine similarity for normalized vectors
+// Cosine similarity for normalized vectors (dot product)
 function cosineSimilarity(a, b) {
   let dot = 0;
-  // If normalize:true worked, dot is enough; still safe to compute dot directly.
   const len = Math.min(a.length, b.length);
   for (let i = 0; i < len; i++) dot += a[i] * b[i];
   return dot;
 }
 
-// ----------------------
-// Utilities
-// ----------------------
 function sendJson(res, statusCode, obj) {
   res.writeHead(statusCode, { "Content-Type": "application/json" });
   res.end(JSON.stringify(obj));
 }
 
-// ----------------------
-// HTTP server
-// ----------------------
 const server = http.createServer((req, res) => {
   if (req.method === "GET" && req.url === "/health") {
     return sendJson(res, 200, { status: "ok" });
@@ -181,13 +169,9 @@ const server = http.createServer((req, res) => {
         const combined = `${title}\n${dow_text}\n${text}`.trim();
         if (!combined) return sendJson(res, 200, { categories: ["general"] });
 
-        // Ensure vectors are ready
         const vecMap = await ensureCategoryVectors();
-
-        // Embed article once
         const articleVec = await embedText(combined);
 
-        // Score each category
         const scores = [];
         for (const cat of CATEGORIES) {
           const catVec = vecMap.get(cat);
@@ -195,7 +179,6 @@ const server = http.createServer((req, res) => {
           scores.push({ cat, score });
         }
 
-        // Sort, pick top
         scores.sort((a, b) => b.score - a.score);
 
         const picked = scores
@@ -204,15 +187,17 @@ const server = http.createServer((req, res) => {
           .map((s) => s.cat);
 
         if (!picked.length) {
-          return sendJson(res, 200, wantDebug ? { categories: ["general"], debug: { top: scores.slice(0, 8) } } : { categories: ["general"] });
+          return sendJson(
+            res,
+            200,
+            wantDebug ? { categories: ["general"], debug: { top: scores.slice(0, 8) } } : { categories: ["general"] },
+          );
         }
 
         return sendJson(
           res,
           200,
-          wantDebug
-            ? { categories: picked, debug: { top: scores.slice(0, 8) } }
-            : { categories: picked },
+          wantDebug ? { categories: picked, debug: { top: scores.slice(0, 8) } } : { categories: picked },
         );
       } catch {
         return sendJson(res, 400, { categories: ["general"], error: "bad_request" });
