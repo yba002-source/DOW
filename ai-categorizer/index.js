@@ -2,17 +2,17 @@ import http from "http";
 import { pipeline } from "@xenova/transformers";
 
 /**
- * DOW AI Categorizer — Embeddings + Similarity (Improved)
+ * DOW AI Categorizer — Embeddings + Similarity (Max 2 Labels)
  *
  * Goal:
- * - Keep semantic (no keyword rules in the backend)
- * - Greatly reduce overuse of ["general"]
+ * - Semantic labeling (no keyword rules)
+ * - Reduce "general"
+ * - Keep output clean (max 2 labels)
  *
- * Changes:
- * - Keep MIN_SCORE, but add a "soft floor" using topScore so we don't drop everything
- * - Always return at least 1 non-general category when the model has a reasonable best match
- * - Prefer 2 labels when the 2nd is close enough to the top (multi-label)
- * - Add lightweight debug controls via payload.debug
+ * Logic:
+ * - Pick #1 if it passes MIN_SCORE (or SOFT_TOP_FLOOR as a fallback)
+ * - Pick #2 only if it's strong enough AND close enough to #1
+ * - Otherwise return only #1
  */
 
 // ----------------------
@@ -105,24 +105,23 @@ const CATEGORY_DESCRIPTIONS = {
 };
 
 // ----------------------
-// Similarity tuning
+// Similarity tuning (Max 2 labels)
 // ----------------------
 
-// Max labels (multi-label)
-const TOP_K = 5;
-
-// Hard minimum (kept, but will not be the only gate)
+// Hard minimum for #1 (and for accepting “strong” labels)
 const MIN_SCORE = 0.22;
 
-// "Soft floor": if the top match is at least this, we will return it even if below MIN_SCORE
-// This prevents "general" everywhere.
+// If nothing passes MIN_SCORE, allow #1 if it’s at least this (prevents “general everywhere”)
 const SOFT_TOP_FLOOR = 0.16;
 
-// If the 2nd best is close to the top, include it (multi-label behavior)
-const SECONDARY_RATIO = 0.92;
+// Accept #2 only if it’s at least this absolute floor (blocks random weak labels)
+const SECOND_MIN_SCORE = 0.18;
 
-// Never return more than this count for clarity
-const MAX_LABELS = 3;
+// Accept #2 only if it’s close enough to #1 (blocks noise like “protest” showing up)
+const SECOND_RATIO = 0.70; // second.score must be >= top.score * 0.70
+
+// Max labels in response
+const MAX_LABELS = 2;
 
 // ----------------------
 // Lazy load model + cache category vectors
@@ -169,35 +168,43 @@ function sendJson(res, statusCode, obj) {
   res.end(JSON.stringify(obj));
 }
 
-// Decide labels with "hard" + "soft" logic
 function pickLabels(scores) {
-  // scores already sorted desc
+  // scores sorted desc
   const top = scores[0];
   const second = scores[1];
 
-  // Strong matches: pass hard MIN_SCORE
-  let picked = scores
-    .filter((s) => s.score >= MIN_SCORE)
-    .slice(0, TOP_K)
-    .map((s) => s.cat);
+  if (!top) return [];
 
-  // If nothing passes MIN_SCORE, use soft floor based on top score.
-  // This is still semantic: it's the best match category by embedding similarity.
-  if (picked.length === 0 && top && top.score >= SOFT_TOP_FLOOR) {
-    picked = [top.cat];
+  // Choose label #1
+  let first = null;
 
-    // Add 2nd label if it is very close to the top (multi-label)
-    if (second && second.score >= SOFT_TOP_FLOOR && second.score >= top.score * SECONDARY_RATIO) {
+  if (top.score >= MIN_SCORE) {
+    first = top;
+  } else if (top.score >= SOFT_TOP_FLOOR) {
+    first = top;
+  } else {
+    return [];
+  }
+
+  const picked = [first.cat];
+
+  // Choose label #2 only if it’s strong AND close enough
+  if (second) {
+    const okAbs = second.score >= SECOND_MIN_SCORE;
+    const okRel = second.score >= first.score * SECOND_RATIO;
+
+    // Also avoid adding #2 if it’s extremely close to floor but clearly weak
+    if (okAbs && okRel) {
       picked.push(second.cat);
     }
   }
 
-  // Keep it small and clean
-  if (picked.length > MAX_LABELS) picked = picked.slice(0, MAX_LABELS);
-
-  return picked;
+  return picked.slice(0, MAX_LABELS);
 }
 
+// ----------------------
+// Server
+// ----------------------
 const server = http.createServer((req, res) => {
   if (req.method === "GET" && req.url === "/health") {
     return sendJson(res, 200, { status: "ok" });
@@ -236,7 +243,13 @@ const server = http.createServer((req, res) => {
             res,
             200,
             wantDebug
-              ? { categories: ["general"], debug: { top: scores.slice(0, 10), thresholds: { MIN_SCORE, SOFT_TOP_FLOOR } } }
+              ? {
+                  categories: ["general"],
+                  debug: {
+                    top: scores.slice(0, 10),
+                    thresholds: { MIN_SCORE, SOFT_TOP_FLOOR, SECOND_MIN_SCORE, SECOND_RATIO, MAX_LABELS },
+                  },
+                }
               : { categories: ["general"] },
           );
         }
@@ -249,7 +262,7 @@ const server = http.createServer((req, res) => {
                 categories: picked,
                 debug: {
                   top: scores.slice(0, 10),
-                  thresholds: { MIN_SCORE, SOFT_TOP_FLOOR, SECONDARY_RATIO, MAX_LABELS },
+                  thresholds: { MIN_SCORE, SOFT_TOP_FLOOR, SECOND_MIN_SCORE, SECOND_RATIO, MAX_LABELS },
                 },
               }
             : { categories: picked },
