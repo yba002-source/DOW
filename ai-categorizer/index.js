@@ -1,18 +1,18 @@
+// index.js
 import http from "http";
 import { pipeline } from "@xenova/transformers";
 
 /**
- * DOW AI Categorizer — Embeddings + Similarity (Max 2 Labels)
+ * DOW AI Categorizer — Embeddings + Similarity (Improved)
  *
  * Goal:
- * - Semantic labeling (no keyword rules)
- * - Reduce "general"
- * - Keep output clean (max 2 labels)
+ * - Keep your embedding-based “AI understands text” approach (no keyword rules)
+ * - Reduce “everything is general” by tuning thresholds AND strengthening category descriptions
+ * - Max 2 labels for now
  *
- * Logic:
- * - Pick #1 if it passes MIN_SCORE (or SOFT_TOP_FLOOR as a fallback)
- * - Pick #2 only if it's strong enough AND close enough to #1
- * - Otherwise return only #1
+ * Notes:
+ * - This is still semantic similarity, not hard keyword categorization.
+ * - The biggest win is making label descriptions more semantically representative (law/crime/accident/etc).
  */
 
 // ----------------------
@@ -62,66 +62,112 @@ const CATEGORIES = [
   "food",
 ];
 
-// Short semantic descriptions
+// ✅ Strengthened semantic descriptions (especially LAW / CRIME / ACCIDENT / DISASTER / WEATHER)
+// These are not "keyword rules" — they are label meaning prompts for the embedder.
 const CATEGORY_DESCRIPTIONS = {
-  politics: "political leadership, policy, government decisions, parliament, president, prime minister",
-  geopolitics: "relations between countries, diplomacy, international tensions, sanctions, border disputes",
-  elections: "voting, campaigns, ballots, election results, candidates, polls",
-  government: "public services, ministries, regulations, permits, visas, residency programs",
-  law: "courts, judges, legal rulings, lawsuits, trials, sentences, appeals",
-  crime: "criminal activity, arrests, police investigations, robbery, fraud, murder",
-  terrorism: "terror attacks, extremist violence, bombings, ISIS, al-Qaeda, hostages",
-  conflict: "wars, armed conflict, fighting, invasion, airstrikes, ceasefire",
-  defense: "military forces, weapons, drones, defense ministry, bases, procurement",
-  protest: "demonstrations, protests, riots, civil unrest, clashes, curfews",
-  economy: "economic growth, inflation, GDP, unemployment, recession, cost of living",
-  markets: "stock markets, indices, bonds, futures, market rally, selloff, trading",
-  business: "companies, earnings, revenue, mergers, acquisitions, layoffs, CEO announcements",
-  energy: "oil, gas, OPEC, pipelines, refineries, renewables, solar, wind, energy supply",
-  finance: "banks, loans, interest rates, central bank decisions, monetary policy, credit",
-  technology: "software, hardware, AI, semiconductors, chips, cloud services, internet platforms",
-  cybersecurity: "hacking, cyber attacks, data breaches, malware, ransomware, phishing",
-  science: "scientific research, studies, discoveries, laboratories, clinical trials",
-  space: "space missions, rockets, satellites, launches, orbit, lunar, Mars",
-  health: "healthcare, hospitals, disease outbreaks, vaccines, medical emergencies",
-  weather: "storms, rainfall, snow, heatwaves, temperature, forecasts, weather warnings",
-  climate: "climate change, emissions, carbon, net zero targets, global warming",
-  environment: "pollution, conservation, wildlife, forests, environmental damage, plastics",
-  disaster: "natural disasters like earthquakes, floods, hurricanes, wildfires, tsunamis, rescue operations",
-  accident: "accidents, crashes, collisions, derailments, injuries, fatalities, incidents",
-  transportation: "roads, highways, traffic, bridges, tunnels, buses, trucks, commuting disruptions",
-  aviation: "airlines, aircraft, flights, airports, runway incidents, airspace restrictions",
-  maritime: "ships, ports, tankers, ferries, coast guard, maritime incidents at sea",
-  rail: "trains, railways, metro systems, subways, stations, rail disruptions",
-  education: "schools, universities, students, teachers, exams, education policy",
-  sports: "sports matches, tournaments, leagues, championships, FIFA, Olympics",
-  entertainment: "movies, music, concerts, celebrities, box office, actors",
-  culture: "museums, art, festivals, heritage, exhibitions, cultural events",
-  fashion: "fashion industry, designers, runway shows, couture, fashion week",
-  travel: "tourism, travel destinations, hotels, travel advisories, visas for travel",
-  real_estate: "housing, property, rent, mortgages, real estate market, developers",
-  labor: "workers, unions, strikes, wages, labor disputes, workforce issues",
-  food: "food safety, contamination, recalls, restaurants, agriculture, supply issues",
+  politics:
+    "politics and political leadership, policy debates, parliament, ministers, president, prime minister, political parties, legislation proposals",
+  geopolitics:
+    "geopolitics and international relations, diplomacy, foreign policy, tensions between countries, sanctions, border disputes, embassies, regional conflicts",
+  elections:
+    "elections and voting, campaign rallies, ballots, election results, candidates, polls, referendums, electoral commission, turnout",
+  government:
+    "government administration, ministries, public services, regulations, permits, visas, residency, civil service decisions, public sector programs",
+  law:
+    "law and justice system, court case, judge, magistrate, trial, hearing, legal ruling, verdict, appeal, lawsuit, prosecution, defense lawyer, conviction, sentencing, suspended sentence, bail",
+  crime:
+    "crime and policing, police investigation, arrest, charged, suspect, offender, assault, attack, stabbing, shooting, robbery, burglary, fraud, kidnapping, violence, homicide, domestic violence, missing person",
+  terrorism:
+    "terrorism and extremist violence, terror attack, bombing, hostage, ISIS, al-Qaeda, militant extremist group, mass casualty attack",
+  conflict:
+    "armed conflict and war, fighting, invasion, airstrikes, frontline clashes, ceasefire talks, shelling, military offensive",
+  defense:
+    "defense and military, armed forces, weapons systems, drones, procurement, bases, training exercises, defense ministry announcements",
+  protest:
+    "protests and civil unrest, demonstrations, riots, clashes with police, strikes, curfews, rallies, unrest in streets",
+  economy:
+    "economy and macroeconomics, GDP, inflation, recession, unemployment, cost of living, economic crisis, currency collapse",
+  markets:
+    "financial markets, stock market, indices, bonds, futures, trading, market rally, selloff, volatility, investors",
+  business:
+    "business and companies, earnings, revenue, mergers and acquisitions, layoffs, corporate announcements, CEO changes, lawsuits involving companies",
+  energy:
+    "energy sector, oil, gas, OPEC, pipelines, refineries, fuel supply, renewables, solar, wind, energy prices",
+  finance:
+    "finance and banking, interest rates, central bank, monetary policy, loans, credit, banking sector stability, liquidity",
+  technology:
+    "technology and innovation, software, hardware, AI products, chips, cloud platforms, big tech, consumer electronics, internet services",
+  cybersecurity:
+    "cybersecurity incidents, hacking, cyber attack, data breach, ransomware, malware, phishing, security vulnerabilities, leaked data",
+  science:
+    "science and research, scientific study, discovery, laboratory work, peer reviewed research, experiments, clinical trials",
+  space:
+    "space exploration, rockets, satellite launch, orbit, lunar mission, Mars mission, space agencies, astronauts",
+  health:
+    "health and medicine, hospitals, illness, disease outbreak, vaccines, mental health, public health policy, medical emergency",
+  weather:
+    "weather and severe weather, storms, rainfall, flooding, heatwave, cyclone, hurricane, snow, temperature records, forecasts, weather warnings",
+  climate:
+    "climate change and emissions, carbon, net zero targets, global warming, climate policy, greenhouse gases, climate impacts",
+  environment:
+    "environment and nature, pollution, conservation, wildlife, forests, habitat loss, environmental damage, plastics, contamination",
+  disaster:
+    "disaster response and major emergencies, natural disaster, earthquake, wildfire, flood, hurricane, cyclone, tsunami, rescue operations, evacuations, disaster zone",
+  accident:
+    "accident and incidents, crash, collision, injuries, fatalities, incident investigation, workplace accident, drowning, industrial accident, traffic accident",
+  transportation:
+    "transportation systems and disruptions, roads, highways, traffic, bridges, tunnels, buses, trucking, commuting disruptions, road closures",
+  aviation:
+    "aviation industry and incidents, airlines, aircraft, flights, airports, runway incident, airspace restriction, flight delays, emergency landing",
+  maritime:
+    "maritime and shipping, ships, ports, tankers, ferries, coast guard, maritime accident, sinking, collision at sea",
+  rail:
+    "rail and metro systems, trains, railways, subway, station closures, derailment, rail disruptions, metro delays",
+  education:
+    "education sector, schools, universities, students, teachers, exams, education policy, school safety, academic results",
+  sports:
+    "sports events and competitions, matches, tournaments, leagues, championships, FIFA, Olympics, athletes",
+  entertainment:
+    "entertainment industry, movies, music, concerts, celebrities, box office, actors, streaming releases",
+  culture:
+    "culture and arts, museums, art exhibitions, festivals, heritage sites, cultural events, literature",
+  fashion:
+    "fashion industry, designers, runway shows, couture, fashion week, luxury brands",
+  travel:
+    "travel and tourism, destinations, hotels, travel advisories, visas for travel, airlines tourism demand",
+  real_estate:
+    "real estate and housing, property prices, rent, mortgages, developers, housing market, construction projects",
+  labor:
+    "labor and workforce, workers, unions, strikes, wage disputes, labor policy, workplace rights, employment issues",
+  food:
+    "food and consumer safety, food contamination, recalls, restaurants, food business, agriculture supply chain, food fraud",
 };
 
 // ----------------------
-// Similarity tuning (Max 2 labels)
+// Similarity + decision tuning
 // ----------------------
 
-// Hard minimum for #1 (and for accepting “strong” labels)
-const MIN_SCORE = 0.22;
-
-// If nothing passes MIN_SCORE, allow #1 if it’s at least this (prevents “general everywhere”)
-const SOFT_TOP_FLOOR = 0.16;
-
-// Accept #2 only if it’s at least this absolute floor (blocks random weak labels)
-const SECOND_MIN_SCORE = 0.18;
-
-// Accept #2 only if it’s close enough to #1 (blocks noise like “protest” showing up)
-const SECOND_RATIO = 0.70; // second.score must be >= top.score * 0.70
-
-// Max labels in response
+// How many labels we can output
 const MAX_LABELS = 2;
+
+// Hard minimum: below this, do not pick (prevents nonsense tags)
+const MIN_SCORE = 0.14;
+
+// Soft gate for top score: if top is below this, return general
+const SOFT_TOP_FLOOR = 0.14;
+
+// Second label gate: only if it clears this AND is reasonably close to top
+const SECOND_MIN_SCORE = 0.11;
+const SECOND_RATIO = 0.70;
+
+// For debug payload
+const THRESHOLDS = {
+  MIN_SCORE,
+  SOFT_TOP_FLOOR,
+  SECOND_MIN_SCORE,
+  SECOND_RATIO,
+  MAX_LABELS,
+};
 
 // ----------------------
 // Lazy load model + cache category vectors
@@ -168,43 +214,49 @@ function sendJson(res, statusCode, obj) {
   res.end(JSON.stringify(obj));
 }
 
-function pickLabels(scores) {
-  // scores sorted desc
-  const top = scores[0];
-  const second = scores[1];
+/**
+ * Pick up to 2 labels using tuned thresholds.
+ * Returns { categories, debugTop, reason }
+ */
+function pickCategories(scores) {
+  // scores must be sorted desc
+  const top = scores[0] || null;
+  if (!top) return { categories: ["general"], reason: "no_scores" };
 
-  if (!top) return [];
-
-  // Choose label #1
-  let first = null;
-
-  if (top.score >= MIN_SCORE) {
-    first = top;
-  } else if (top.score >= SOFT_TOP_FLOOR) {
-    first = top;
-  } else {
-    return [];
+  // If even the best match is too weak, return general
+  if (top.score < SOFT_TOP_FLOOR) {
+    return { categories: ["general"], reason: "top_below_soft_floor" };
   }
 
-  const picked = [first.cat];
+  // Filter by minimum score
+  const eligible = scores.filter((s) => s.score >= MIN_SCORE);
 
-  // Choose label #2 only if it’s strong AND close enough
-  if (second) {
-    const okAbs = second.score >= SECOND_MIN_SCORE;
-    const okRel = second.score >= first.score * SECOND_RATIO;
+  if (!eligible.length) {
+    return { categories: ["general"], reason: "none_above_min_score" };
+  }
 
-    // Also avoid adding #2 if it’s extremely close to floor but clearly weak
-    if (okAbs && okRel) {
-      picked.push(second.cat);
+  // Always take the best eligible
+  const picked = [eligible[0].cat];
+
+  // Optionally take a second label if it meets second criteria
+  if (MAX_LABELS >= 2) {
+    const second = eligible.find((s) => s.cat !== picked[0]);
+    if (second) {
+      const closeEnough = second.score >= top.score * SECOND_RATIO;
+      const strongEnough = second.score >= SECOND_MIN_SCORE;
+      if (closeEnough && strongEnough) {
+        picked.push(second.cat);
+      }
     }
   }
 
-  return picked.slice(0, MAX_LABELS);
+  if (!picked.length) {
+    return { categories: ["general"], reason: "picked_empty" };
+  }
+
+  return { categories: picked, reason: "picked_ok" };
 }
 
-// ----------------------
-// Server
-// ----------------------
 const server = http.createServer((req, res) => {
   if (req.method === "GET" && req.url === "/health") {
     return sendJson(res, 200, { status: "ok" });
@@ -221,8 +273,11 @@ const server = http.createServer((req, res) => {
         const dow_text = String(payload.dow_text || "");
         const wantDebug = Boolean(payload.debug);
 
-        const combined = `${title}\n${dow_text}\n${text}`.trim();
-        if (!combined) return sendJson(res, 200, { categories: ["general"] });
+        // Combine in a stable order
+        const combined = `${title}\n\n${dow_text}\n\n${text}`.trim();
+        if (!combined) {
+          return sendJson(res, 200, wantDebug ? { categories: ["general"], debug: { top: [], thresholds: THRESHOLDS } } : { categories: ["general"] });
+        }
 
         const vecMap = await ensureCategoryVectors();
         const articleVec = await embedText(combined);
@@ -236,37 +291,20 @@ const server = http.createServer((req, res) => {
 
         scores.sort((a, b) => b.score - a.score);
 
-        const picked = pickLabels(scores);
+        const { categories, reason } = pickCategories(scores);
 
-        if (!picked.length) {
-          return sendJson(
-            res,
-            200,
-            wantDebug
-              ? {
-                  categories: ["general"],
-                  debug: {
-                    top: scores.slice(0, 10),
-                    thresholds: { MIN_SCORE, SOFT_TOP_FLOOR, SECOND_MIN_SCORE, SECOND_RATIO, MAX_LABELS },
-                  },
-                }
-              : { categories: ["general"] },
-          );
+        if (!wantDebug) {
+          return sendJson(res, 200, { categories });
         }
 
-        return sendJson(
-          res,
-          200,
-          wantDebug
-            ? {
-                categories: picked,
-                debug: {
-                  top: scores.slice(0, 10),
-                  thresholds: { MIN_SCORE, SOFT_TOP_FLOOR, SECOND_MIN_SCORE, SECOND_RATIO, MAX_LABELS },
-                },
-              }
-            : { categories: picked },
-        );
+        return sendJson(res, 200, {
+          categories,
+          debug: {
+            reason,
+            top: scores.slice(0, 10),
+            thresholds: THRESHOLDS,
+          },
+        });
       } catch {
         return sendJson(res, 400, { categories: ["general"], error: "bad_request" });
       }
