@@ -2,12 +2,17 @@ import http from "http";
 import { pipeline } from "@xenova/transformers";
 
 /**
- * DOW AI Categorizer — Embeddings + Similarity (Fixed)
+ * DOW AI Categorizer — Embeddings + Similarity (Improved)
  *
- * Improvements:
- * - Correct vector handling
- * - Cache category embeddings (fast + scalable)
- * - Deterministic top-k selection
+ * Goal:
+ * - Keep semantic (no keyword rules in the backend)
+ * - Greatly reduce overuse of ["general"]
+ *
+ * Changes:
+ * - Keep MIN_SCORE, but add a "soft floor" using topScore so we don't drop everything
+ * - Always return at least 1 non-general category when the model has a reasonable best match
+ * - Prefer 2 labels when the 2nd is close enough to the top (multi-label)
+ * - Add lightweight debug controls via payload.debug
  */
 
 // ----------------------
@@ -99,11 +104,25 @@ const CATEGORY_DESCRIPTIONS = {
   food: "food safety, contamination, recalls, restaurants, agriculture, supply issues",
 };
 
+// ----------------------
 // Similarity tuning
+// ----------------------
+
+// Max labels (multi-label)
 const TOP_K = 5;
 
-// ✅ CHANGED: stricter threshold to reduce irrelevant tags
-const MIN_SCORE = 0.30;
+// Hard minimum (kept, but will not be the only gate)
+const MIN_SCORE = 0.22;
+
+// "Soft floor": if the top match is at least this, we will return it even if below MIN_SCORE
+// This prevents "general" everywhere.
+const SOFT_TOP_FLOOR = 0.16;
+
+// If the 2nd best is close to the top, include it (multi-label behavior)
+const SECONDARY_RATIO = 0.92;
+
+// Never return more than this count for clarity
+const MAX_LABELS = 3;
 
 // ----------------------
 // Lazy load model + cache category vectors
@@ -150,6 +169,35 @@ function sendJson(res, statusCode, obj) {
   res.end(JSON.stringify(obj));
 }
 
+// Decide labels with "hard" + "soft" logic
+function pickLabels(scores) {
+  // scores already sorted desc
+  const top = scores[0];
+  const second = scores[1];
+
+  // Strong matches: pass hard MIN_SCORE
+  let picked = scores
+    .filter((s) => s.score >= MIN_SCORE)
+    .slice(0, TOP_K)
+    .map((s) => s.cat);
+
+  // If nothing passes MIN_SCORE, use soft floor based on top score.
+  // This is still semantic: it's the best match category by embedding similarity.
+  if (picked.length === 0 && top && top.score >= SOFT_TOP_FLOOR) {
+    picked = [top.cat];
+
+    // Add 2nd label if it is very close to the top (multi-label)
+    if (second && second.score >= SOFT_TOP_FLOOR && second.score >= top.score * SECONDARY_RATIO) {
+      picked.push(second.cat);
+    }
+  }
+
+  // Keep it small and clean
+  if (picked.length > MAX_LABELS) picked = picked.slice(0, MAX_LABELS);
+
+  return picked;
+}
+
 const server = http.createServer((req, res) => {
   if (req.method === "GET" && req.url === "/health") {
     return sendJson(res, 200, { status: "ok" });
@@ -181,23 +229,30 @@ const server = http.createServer((req, res) => {
 
         scores.sort((a, b) => b.score - a.score);
 
-        const picked = scores
-          .filter((s) => s.score >= MIN_SCORE)
-          .slice(0, TOP_K)
-          .map((s) => s.cat);
+        const picked = pickLabels(scores);
 
         if (!picked.length) {
           return sendJson(
             res,
             200,
-            wantDebug ? { categories: ["general"], debug: { top: scores.slice(0, 8) } } : { categories: ["general"] },
+            wantDebug
+              ? { categories: ["general"], debug: { top: scores.slice(0, 10), thresholds: { MIN_SCORE, SOFT_TOP_FLOOR } } }
+              : { categories: ["general"] },
           );
         }
 
         return sendJson(
           res,
           200,
-          wantDebug ? { categories: picked, debug: { top: scores.slice(0, 8) } } : { categories: picked },
+          wantDebug
+            ? {
+                categories: picked,
+                debug: {
+                  top: scores.slice(0, 10),
+                  thresholds: { MIN_SCORE, SOFT_TOP_FLOOR, SECONDARY_RATIO, MAX_LABELS },
+                },
+              }
+            : { categories: picked },
         );
       } catch {
         return sendJson(res, 400, { categories: ["general"], error: "bad_request" });
